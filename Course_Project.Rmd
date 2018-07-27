@@ -1,0 +1,127 @@
+---
+title: "PML Course Project"
+output: html_document
+---
+
+##Executive Summary
+
+In the following analysis, we will attempt to apply various machine learning models to a dataset that pertains to barbel exercices. The objective is to correctly predict the type of exercice that is being executed based on the various data points provided. With some data manipulation and cross validation, we will be able to provide a model that will likely be very accurate. This model will then be applied towards the test set provided.
+
+##Loading data, Preprocessing and Exploratory Analysis
+
+As per the source website, the data was gathered under the following context: 
+
+>Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+>Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience.
+
+```{r cache=TRUE, fig.align='center'}
+library(ggplot2)
+testing <- read.csv("pml-testing.csv")
+training <- read.csv("pml-training.csv")
+
+trainingTemp <- training
+
+trainingTemp$rawtime <- formatC(training$raw_timestamp_part_2, width = 7, format = "d", flag = "0")
+trainingTemp$rawtime <- as.numeric(paste(training$raw_timestamp_part_1, trainingTemp$rawtime, sep=""))
+
+#rawtime converted to character to remove time gaps with no data
+qplot(x=as.character(rawtime), y=user_name, data = trainingTemp, colour=classe)
+```
+  
+We have created a custom timestamp with the `raw_timestap_part_1` and `raw_timestap_part_2` columns in order to generate a unique value, more granular than the `cvtd_timestamp`, which is somewhat bulky (only 20 unique values).  
+  
+Just looking at the training data, we can deduce that each participant executed each exercice in th same order (A to E). Consequently, if the test data was extracted from the same dataset (same participants, but at random times selected in the larger dataset), it would be fairly easy to establish what exercice they were doing, provided the data points are between the ones in our training set. Since we want our model to pinpoint the exercice based on information that excludes time and other personnal identifying characteristics, we will remove these columns from our datasets.  
+
+In addition, since we have a large number of columns (some of which have questionable added value), we will seek to further reduce the number of columns by removing those with very low/NULL values and those with mainly NA values. This will help manage the computational requirements.
+
+```{r}
+library(caret); library(kernlab)
+trainingTemp <- training[,-(1:7)]
+testingTemp <- testing[,-(1:7)]
+
+#Dataset truncated to preserve outcome variable
+NZ <- nearZeroVar(trainingTemp[c(-(dim(trainingTemp)[2]))])
+trainingTemp <- trainingTemp[-NZ]
+testingTemp <- testingTemp[-NZ]
+
+na_count <-sapply(trainingTemp, function(y) sum((is.na(y))))
+full_na <- as.vector(na_count>(nrow(trainingTemp)*0.95))
+
+trainingTemp <- trainingTemp[c(!full_na)]
+testingTemp <- testingTemp[c(!full_na)]
+
+```
+
+We are now left with 52 predictor columns.
+
+##Data Split (for Cross Validation)
+In order to do some cross-validation within our training dataset, we will split it randomly with a 60/40 split on the outcome `classe`. 
+
+```{r}
+set.seed(1234)
+inTrain <- createDataPartition(y=trainingTemp$classe,p=.6, list=FALSE)
+
+validation <- trainingTemp[-inTrain,]
+trainingTemp <- trainingTemp[inTrain,]
+```
+  
+
+##Model Selection
+Let's now run some different models and see how each perform on the training and validation sets.  
+
+```{r cache=TRUE}
+library(doParallel); library(foreach); library(iterators); library(parallel)
+
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+fitrf <- train(classe ~ ., method = "rf", data = trainingTemp)
+
+stopCluster(cl)
+
+confusionMatrix(predict(fitrf, trainingTemp),trainingTemp$classe)
+confusionMatrix(predict(fitrf, validation),validation$classe)
+
+```
+
+```{r cache=TRUE}
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+fitgbm <- train(classe ~ ., method = "gbm", data = trainingTemp, verbose = FALSE)
+
+stopCluster(cl)
+
+confusionMatrix(predict(fitgbm, trainingTemp),trainingTemp$classe)
+confusionMatrix(predict(fitgbm, validation),validation$classe)
+
+```
+
+```{r cache=TRUE}
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+fitlda <- train(classe ~ ., method = "lda", data = trainingTemp)
+
+stopCluster(cl)
+
+confusionMatrix(predict(fitlda, trainingTemp),trainingTemp$classe)
+confusionMatrix(predict(fitlda, validation),validation$classe)
+
+```
+
+
+From the results above, we can see that the random forest model performs best on the validation set. The validation set error rate is higher than the error rate on the training set, as expected, but still remains very low. 
+To get a better sense of what variables are most important, below is a plot of the relative importance of each variable within the chosen model.
+
+```{r , fig.align='center', fig.height = 8, fig.width = 7}
+plot(varImp(fitrf), main = "Variable Importance")
+```
+
+We are confident this model will perform well for predicting the test set.
+
+```{r}
+print(data.frame(Problem_ID=testingTemp$problem_id,Prediction=predict(fitrf, testingTemp)),row.names=FALSE)
+```
+
